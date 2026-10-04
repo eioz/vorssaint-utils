@@ -25,6 +25,16 @@ enum DockClickRepeatDecision: Equatable {
     case deriveFromState
 }
 
+/// One running process behind a Dock tile, reduced to what pairing a tile with
+/// an instance needs.
+struct DockAppInstance: Equatable {
+    let pid: pid_t
+    /// Seconds since the reference date, or nil when the process will not say.
+    /// A missing time sorts oldest so the entry keeps a stable slot instead of
+    /// drifting through the order between clicks.
+    let launchTime: TimeInterval?
+}
+
 enum DockClickSupport {
     /// Both local and published builds may be running during development.
     /// Neither is ever a valid target for the other's global Dock click tap.
@@ -285,5 +295,39 @@ enum DockClickSupport {
             isCovered = true
         }
         return false
+    }
+
+    /// Which running instance the Nth Dock tile for a bundle stands for, as an
+    /// index into `instances`.
+    ///
+    /// Apps that run as several separate processes get a Dock tile each, and
+    /// nothing the Dock publishes says which tile is which process. A tile
+    /// answers AXRole, AXSubrole, AXTitle, AXURL, AXPosition, AXSize, AXFrame,
+    /// AXIsApplicationRunning, AXSelected, AXParent and an empty AXChildren;
+    /// for two instances of one bundle every one of those reads the same,
+    /// AXSelected included while one of them is frontmost. There is no
+    /// AXIdentifier, and AXUIElementGetPid on a tile answers the Dock. The link
+    /// left is ordinal, and pressing the tiles in place confirms it: the Dock
+    /// appends one tile per extra instance in launch order, and a pinned tile
+    /// holds the oldest instance ahead of them, so tile order and launch order
+    /// run in parallel.
+    ///
+    /// Ties break on pid so the order is total. Launch dates are coarse and two
+    /// instances started by one script can share one, and a total order is what
+    /// keeps consecutive clicks landing on the same instance.
+    ///
+    /// The ordinal is clamped rather than rejected. Tiles and instances disagree
+    /// for a moment while one is launching or quitting, and acting on the
+    /// nearest plausible instance keeps the click working, where answering
+    /// nothing would leave the icon looking dead.
+    static func instanceIndex(tileOrdinal: Int, instances: [DockAppInstance]) -> Int? {
+        guard !instances.isEmpty else { return nil }
+        let byAge = instances.indices.sorted { first, second in
+            let firstTime = instances[first].launchTime ?? -.infinity
+            let secondTime = instances[second].launchTime ?? -.infinity
+            if firstTime != secondTime { return firstTime < secondTime }
+            return instances[first].pid < instances[second].pid
+        }
+        return byAge[min(max(tileOrdinal, 0), byAge.count - 1)]
     }
 }

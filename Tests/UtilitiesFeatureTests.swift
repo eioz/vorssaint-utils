@@ -1215,6 +1215,55 @@ enum UtilitiesFeatureTests {
         suite.expect(DockClickSupport.restoreSequence(ids: [nil, nil], frontToBack: []) == [0, 1],
                "unresolvable windows are never deduped away")
 
+        // MARK: Dock tiles for apps that run as several processes
+
+        // Listed newest first on purpose: the workspace's own order is what used
+        // to decide this, and it must not.
+        let twoInstances = [DockAppInstance(pid: 9123, launchTime: 200),
+                            DockAppInstance(pid: 8566, launchTime: 100)]
+        suite.expect(DockClickSupport.instanceIndex(tileOrdinal: 0, instances: twoInstances) == 1,
+                     "the first tile means the oldest instance, not the first one listed")
+        suite.expect(DockClickSupport.instanceIndex(tileOrdinal: 1, instances: twoInstances) == 0,
+                     "the second tile means the next instance by launch time")
+        suite.expect(DockClickSupport.instanceIndex(tileOrdinal: 0, instances: twoInstances)
+                        != DockClickSupport.instanceIndex(tileOrdinal: 1, instances: twoInstances),
+                     "two tiles for one bundle never collapse onto the same process")
+        suite.expect(DockClickSupport.instanceIndex(tileOrdinal: 0,
+                                                    instances: [DockAppInstance(pid: 42, launchTime: 1)]) == 0,
+                     "an ordinary single process app resolves to itself")
+        suite.expect(DockClickSupport.instanceIndex(tileOrdinal: 0, instances: []) == nil,
+                     "a tile whose app is not running resolves to nothing")
+        suite.expect(DockClickSupport.instanceIndex(tileOrdinal: 3, instances: twoInstances) == 0,
+                     "a tile past the last instance clamps to the newest instead of dropping the click")
+        suite.expect(DockClickSupport.instanceIndex(tileOrdinal: -1, instances: twoInstances) == 1,
+                     "an ordinal that could not be counted falls back to the oldest instance")
+
+        // More instances than tiles: the extra process simply has no tile, and
+        // the tiles that do exist still address distinct processes.
+        let threeInstances = [DockAppInstance(pid: 30, launchTime: 300),
+                              DockAppInstance(pid: 10, launchTime: 100),
+                              DockAppInstance(pid: 20, launchTime: 200)]
+        suite.expect(DockClickSupport.instanceIndex(tileOrdinal: 0, instances: threeInstances) == 1
+                        && DockClickSupport.instanceIndex(tileOrdinal: 1, instances: threeInstances) == 2,
+                     "fewer tiles than instances address the oldest ones in order")
+
+        suite.expect(DockClickSupport.instanceIndex(
+                        tileOrdinal: 1,
+                        instances: [DockAppInstance(pid: 300, launchTime: 100),
+                                    DockAppInstance(pid: 100, launchTime: 100),
+                                    DockAppInstance(pid: 200, launchTime: 100)]) == 2,
+                     "instances sharing a launch time keep a stable order by pid")
+        suite.expect(DockClickSupport.instanceIndex(
+                        tileOrdinal: 0,
+                        instances: [DockAppInstance(pid: 700, launchTime: 50),
+                                    DockAppInstance(pid: 600, launchTime: nil)]) == 1,
+                     "an instance with no launch time sorts oldest and keeps the first tile")
+        suite.expect(DockClickSupport.instanceIndex(
+                        tileOrdinal: 1,
+                        instances: [DockAppInstance(pid: 700, launchTime: nil),
+                                    DockAppInstance(pid: 600, launchTime: nil)]) == 0,
+                     "with no launch times at all pid order stands in for launch order")
+
         // MARK: Quick toggles
 
         suite.expect(QuickTogglesSupport.emptyTrashSource == "tell application \"Finder\" to empty trash",
