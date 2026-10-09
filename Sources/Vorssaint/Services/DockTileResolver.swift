@@ -15,7 +15,8 @@ import ApplicationServices
 ///
 /// Both the Dock click tap and the Dock preview hit test resolve through here,
 /// so a preview panel opened over one tile and a click on that tile always mean
-/// the same process.
+/// the same process. Pairings are remembered between lookups, so a tile keeps
+/// its process when it is dragged elsewhere in the Dock.
 enum DockTileResolver {
     /// The instance behind the tile at `index` of `items`, the Dock's own item
     /// list the caller is already walking.
@@ -27,34 +28,48 @@ enum DockTileResolver {
         // click tap's Accessibility budget: a single instance needs no ordinal,
         // so it costs no extra AX round trip at all.
         guard instances.count > 1 else { return instances.first }
-        return instance(from: instances,
-                        tileOrdinal: tileOrdinal(at: index, in: items, bundlePath: bundlePath))
+        guard items.indices.contains(index) else { return nil }
+        let tile = items[index]
+        return instance(forTile: tile,
+                        amongTiles: tiles(in: items, bundlePath: bundlePath, including: tile),
+                        instances: instances,
+                        bundlePath: bundlePath)
+    }
+
+    /// What an element found by AX hit testing stands for.
+    enum TileResolution {
+        /// No tile of a running app, so the caller keeps whatever fallback it
+        /// had.
+        case unknown
+        /// A tile of an app running as several processes that none of them
+        /// stands behind right now: one kept in the Dock after its instance
+        /// quit, or one whose instance is still launching. A fallback by name
+        /// would land on another process, so the caller shows nothing.
+        case unpaired
+        case instance(NSRunningApplication)
     }
 
     /// The instance behind a tile a caller found by AX hit testing, which leaves
-    /// it holding an element rather than a place in a list. Answers nil when the
-    /// element names no bundle, or no process of that bundle is running, so the
-    /// caller keeps whatever fallback it had.
-    static func application(forTile tile: AXUIElement) -> NSRunningApplication? {
-        guard let url = urlAttribute(tile) else { return nil }
+    /// it holding an element rather than a place in a list.
+    static func resolution(forTile tile: AXUIElement) -> TileResolution {
+        guard let url = readURL(tile).url else { return .unknown }
         let bundlePath = url.standardizedFileURL.path
         let instances = runningInstances(bundlePath: bundlePath)
-        guard instances.count > 1 else { return instances.first }
+        guard instances.count > 1 else { return instances.first.map { .instance($0) } ?? .unknown }
         // Reached only once the bundle turns out to have several instances, so
         // the extra AXParent and AXChildren reads stay off the ordinary path.
-        guard let parent = elementAttribute(tile, kAXParentAttribute as String),
-              stringAttribute(parent, kAXRoleAttribute as String) == "AXList",
-              let items = elementArray(parent, kAXChildrenAttribute as String),
-              // AXUIElement carries no Swift equality; CFEqual is how this
-              // codebase already compares accessibility elements.
-              let index = items.firstIndex(where: { CFEqual($0, tile) })
-        else {
-            // Nothing to count against: the oldest instance is where the Dock's
-            // own first tile points, and where the bundle match landed before.
-            return instance(from: instances, tileOrdinal: 0)
+        let tiles: TileList?
+        if let parent = elementAttribute(tile, kAXParentAttribute as String),
+           stringAttribute(parent, kAXRoleAttribute as String) == "AXList",
+           let items = elementArray(parent, kAXChildrenAttribute as String) {
+            tiles = self.tiles(in: items, bundlePath: bundlePath, including: tile)
+        } else {
+            // Nothing to compare against: only a tile paired before keeps
+            // its process.
+            tiles = nil
         }
-        return instance(from: instances,
-                        tileOrdinal: tileOrdinal(at: index, in: items, bundlePath: bundlePath))
+        return instance(forTile: tile, amongTiles: tiles, instances: instances, bundlePath: bundlePath)
+            .map { .instance($0) } ?? .unpaired
     }
 
     /// Every live, regular process running this exact bundle. Only regular apps
@@ -66,31 +81,79 @@ enum DockTileResolver {
         }
     }
 
-    /// How many tiles for the same bundle sit ahead of this one. Reads AXURL for
-    /// the earlier items only, and from the Dock rather than the clicked app:
-    /// the caller's own walk already reads attributes from that same process, so
-    /// this adds to an existing cost rather than a new one. Tiles whose frame the
-    /// caller could not read still hold their slot, which is what keeps the count
-    /// aligned with the tiles the Dock actually shows.
-    private static func tileOrdinal(at index: Int,
-                                    in items: [AXUIElement],
-                                    bundlePath: String) -> Int {
-        items.prefix(index).reduce(into: 0) { count, item in
-            if urlAttribute(item)?.standardizedFileURL.path == bundlePath { count += 1 }
-        }
+    /// The tiles of one bundle in Dock order, and whether every item in the
+    /// list answered. A list with a tile missing pairs the rest by the wrong
+    /// order, so it serves the lookup at hand but is never remembered.
+    private struct TileList {
+        var tiles: [AXUIElement] = []
+        var complete = true
     }
 
-    private static func instance(from instances: [NSRunningApplication],
-                                 tileOrdinal: Int) -> NSRunningApplication? {
+    /// Reads AXURL from the Dock for every item, and AXIsApplicationRunning for
+    /// the tiles of this bundle, which only apps with several instances pay
+    /// for. A tile kept in the Dock after its instance quit shows no running
+    /// app and takes no instance, so it cannot push the running tiles out of
+    /// launch order. The tile being resolved counts whatever its URL read says
+    /// this time.
+    private static func tiles(in items: [AXUIElement],
+                              bundlePath: String,
+                              including tile: AXUIElement) -> TileList {
+        var list = TileList()
+        for item in items {
+            if !CFEqual(item, tile) {
+                let read = readURL(item)
+                if !read.answered { list.complete = false }
+                guard read.url?.standardizedFileURL.path == bundlePath else { continue }
+            }
+            let running = readRunning(item)
+            if !running.answered { list.complete = false }
+            if running.isRunning { list.tiles.append(item) }
+        }
+        return list
+    }
+
+    /// A tile's element, compared the way the accessibility API compares them.
+    private struct TileKey: Equatable {
+        let element: AXUIElement
+        static func == (lhs: TileKey, rhs: TileKey) -> Bool { CFEqual(lhs.element, rhs.element) }
+    }
+
+    /// The pairings last made for each bundle, kept so a dragged tile keeps
+    /// its process. The click tap and the preview hit test both land here and
+    /// need not share a thread.
+    private static let pairingLock = NSLock()
+    private static var pairings: [String: [DockTilePairing<TileKey>]] = [:]
+
+    private static func instance(forTile tile: AXUIElement,
+                                 amongTiles list: TileList?,
+                                 instances: [NSRunningApplication],
+                                 bundlePath: String) -> NSRunningApplication? {
         let described = instances.map {
             DockAppInstance(pid: $0.processIdentifier,
                             launchTime: DockClickSupport.launchTime(
                                 processStartMicroseconds: KillProcessService.startTime(for: $0.processIdentifier),
                                 launchDate: $0.launchDate))
         }
-        guard let slot = DockClickSupport.instanceIndex(tileOrdinal: tileOrdinal,
-                                                        instances: described) else { return nil }
-        return instances[slot]
+        let hit = TileKey(element: tile)
+        let paired = pairingLock.withLock { () -> [DockTilePairing<TileKey>] in
+            let previous = pairings[bundlePath] ?? []
+            // Without the whole, settled tile list only a pairing this tile
+            // already has holds, and nothing is stored.
+            let tiles = list?.tiles.map(TileKey.init(element:)) ?? [hit]
+            let complete = list?.complete ?? false
+            let made = DockClickSupport.pairTiles(tiles,
+                                                  instances: described,
+                                                  previous: previous,
+                                                  complete: complete)
+            if DockClickSupport.canPairByOrder(tileCount: tiles.count,
+                                               instanceCount: described.count,
+                                               complete: complete) {
+                pairings[bundlePath] = made
+            }
+            return made
+        }
+        guard let pid = paired.first(where: { $0.tile == hit })?.pid else { return nil }
+        return instances.first { $0.processIdentifier == pid }
     }
 
     // MARK: - Accessibility reads
@@ -119,12 +182,33 @@ enum DockTileResolver {
         return value as? String
     }
 
-    private static func urlAttribute(_ element: AXUIElement) -> URL? {
+    /// Whether a tile shows a running app, and whether the read answered. A
+    /// tile that cannot say is counted as running, which is how every tile was
+    /// counted before.
+    private static func readRunning(_ element: AXUIElement) -> (isRunning: Bool, answered: Bool) {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXURLAttribute as CFString, &value) == .success,
-              let value,
-              CFGetTypeID(value) == CFURLGetTypeID()
-        else { return nil }
-        return (value as! CFURL) as URL
+        switch AXUIElementCopyAttributeValue(element, "AXIsApplicationRunning" as CFString, &value) {
+        case .success:
+            return ((value as? Bool) ?? true, true)
+        case .noValue, .attributeUnsupported:
+            return (true, true)
+        default:
+            return (true, false)
+        }
+    }
+
+    /// An element's AXURL, and whether the read answered at all. Separators
+    /// and minimized windows have no URL, which is an answer; a timeout is not.
+    private static func readURL(_ element: AXUIElement) -> (url: URL?, answered: Bool) {
+        var value: CFTypeRef?
+        switch AXUIElementCopyAttributeValue(element, kAXURLAttribute as CFString, &value) {
+        case .success:
+            guard let value, CFGetTypeID(value) == CFURLGetTypeID() else { return (nil, true) }
+            return ((value as! CFURL) as URL, true)
+        case .noValue, .attributeUnsupported:
+            return (nil, true)
+        default:
+            return (nil, false)
+        }
     }
 }

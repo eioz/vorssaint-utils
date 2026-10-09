@@ -35,6 +35,17 @@ struct DockAppInstance: Equatable {
     let launchTime: TimeInterval?
 }
 
+/// A Dock tile and the process it was paired with.
+struct DockTilePairing<Tile> {
+    let tile: Tile
+    let pid: pid_t
+    /// The process's start time, so a pid the system later hands to another
+    /// instance does not inherit the tile.
+    let launchTime: TimeInterval?
+}
+
+extension DockTilePairing: Equatable where Tile: Equatable {}
+
 enum DockClickSupport {
     /// Both local and published builds may be running during development.
     /// Neither is ever a valid target for the other's global Dock click tap.
@@ -297,8 +308,7 @@ enum DockClickSupport {
         return false
     }
 
-    /// Which running instance the Nth Dock tile for a bundle stands for, as an
-    /// index into `instances`.
+    /// Which instance each Dock tile of a bundle stands for.
     ///
     /// Apps that run as several separate processes get a Dock tile each, and
     /// nothing the Dock publishes says which tile is which process. A tile
@@ -306,29 +316,69 @@ enum DockClickSupport {
     /// AXIsApplicationRunning, AXSelected, AXParent and an empty AXChildren;
     /// for two instances of one bundle every one of those reads the same,
     /// AXSelected included while one of them is frontmost. There is no
-    /// AXIdentifier, and AXUIElementGetPid on a tile answers the Dock. The link
-    /// left is ordinal, and pressing the tiles in place confirms it: the Dock
+    /// AXIdentifier, and AXUIElementGetPid on a tile answers the Dock. The Dock
     /// appends one tile per extra instance in launch order, and a pinned tile
     /// holds the oldest instance ahead of them, so tile order and launch order
-    /// run in parallel.
+    /// start out in parallel.
+    ///
+    /// Dragging a tile ends that: the Dock keeps every tile bound to its
+    /// process wherever it moves. It also keeps a tile's accessibility element
+    /// while the tile stays put, and a dragged tile comes back as a new
+    /// element. So a pairing holds while its tile and its process are both
+    /// still there, and a tile seen for the first time takes the process whose
+    /// tile went away. Only what is left after that pairs up by order, oldest
+    /// instance first, which on a first look is every tile. Tiles dragged
+    /// before that first look pair by that order too, and stay wrong until a
+    /// tile or an instance changes; so does a tile dragged while its app ran
+    /// as a single process, which needs and keeps no pairing.
+    ///
+    /// Pairing by order needs the whole picture. A list read only in part
+    /// cannot tell a tile it missed from one that went away, and while an
+    /// instance launches or quits its tile and its process come and go at
+    /// different moments, so running tiles and instances differ in number.
+    /// Either way the pairings that still hold are kept and no new ones are
+    /// made, since an order taken then would be remembered wrong.
     ///
     /// Ties break on pid so the order is total. Launch dates are coarse and two
     /// instances started by one script can share one, and a total order is what
     /// keeps consecutive clicks landing on the same instance.
     ///
-    /// The ordinal is clamped rather than rejected. Tiles and instances disagree
-    /// for a moment while one is launching or quitting, and acting on the
-    /// nearest plausible instance keeps the click working, where answering
-    /// nothing would leave the icon looking dead.
-    static func instanceIndex(tileOrdinal: Int, instances: [DockAppInstance]) -> Int? {
-        guard !instances.isEmpty else { return nil }
-        let byAge = instances.indices.sorted { first, second in
-            let firstTime = instances[first].launchTime ?? -.infinity
-            let secondTime = instances[second].launchTime ?? -.infinity
-            if firstTime != secondTime { return firstTime < secondTime }
-            return instances[first].pid < instances[second].pid
+    /// A tile with no instance left to take stays unpaired, and the caller
+    /// leaves that click to the Dock, which knows the process itself. Tiles and
+    /// instances disagree like that for a moment while one is launching or
+    /// quitting, and for a tile kept in the Dock after its instance quit.
+    static func pairTiles<Tile: Equatable>(_ tiles: [Tile],
+                                           instances: [DockAppInstance],
+                                           previous: [DockTilePairing<Tile>],
+                                           complete: Bool = true) -> [DockTilePairing<Tile>] {
+        var pairings: [DockTilePairing<Tile>] = []
+        for pairing in previous
+        where instances.contains(where: { $0.pid == pairing.pid && $0.launchTime == pairing.launchTime })
+            && tiles.contains(pairing.tile)
+            && !pairings.contains(where: { $0.pid == pairing.pid || $0.tile == pairing.tile }) {
+            pairings.append(pairing)
         }
-        return byAge[min(max(tileOrdinal, 0), byAge.count - 1)]
+        guard canPairByOrder(tileCount: tiles.count, instanceCount: instances.count, complete: complete)
+        else { return pairings }
+        let freeTiles = tiles.filter { tile in !pairings.contains { $0.tile == tile } }
+        let freeInstances = instances
+            .filter { instance in !pairings.contains { $0.pid == instance.pid } }
+            .sorted { first, second in
+                let firstTime = first.launchTime ?? -.infinity
+                let secondTime = second.launchTime ?? -.infinity
+                if firstTime != secondTime { return firstTime < secondTime }
+                return first.pid < second.pid
+            }
+        for (tile, instance) in zip(freeTiles, freeInstances) {
+            pairings.append(DockTilePairing(tile: tile, pid: instance.pid, launchTime: instance.launchTime))
+        }
+        return pairings
+    }
+
+    /// Whether a read of the tiles is whole and settled enough to pair new
+    /// tiles by order, and to be remembered.
+    static func canPairByOrder(tileCount: Int, instanceCount: Int, complete: Bool) -> Bool {
+        complete && tileCount == instanceCount
     }
 
     /// When an instance started, as seconds since the reference date. The

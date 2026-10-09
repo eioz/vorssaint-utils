@@ -1210,10 +1210,15 @@ final class DockPreviewService: ObservableObject {
         // icon rather than to whatever sat under the pointer inside it.
         let chain = elementAndParents(from: element).filter { pid(of: $0) == dockPID }
         for candidate in chain {
-            guard let app = DockTileResolver.application(forTile: candidate),
-                  let frame = appKitFrame(of: candidate)
-            else { continue }
-            return DockHit(app: app, iconFrame: frame, preferences: preferences)
+            switch DockTileResolver.resolution(forTile: candidate) {
+            case .instance(let app):
+                guard let frame = appKitFrame(of: candidate) else { continue }
+                return DockHit(app: app, iconFrame: frame, preferences: preferences)
+            case .unpaired:
+                return nil
+            case .unknown:
+                continue
+            }
         }
         for candidate in chain {
             guard let frame = appKitFrame(of: candidate),
