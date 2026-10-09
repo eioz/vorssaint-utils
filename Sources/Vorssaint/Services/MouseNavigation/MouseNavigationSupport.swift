@@ -81,17 +81,18 @@ enum MouseNavigationSupport {
     /// that read enabled, and `disabled` every item carrying it that read
     /// disabled.
     ///
-    /// A menu reports the state its items were last validated in, which
-    /// trails the app: right after Forward, Back still reads disabled for up
-    /// to about a second. With no enabled item under any of the shortcuts,
-    /// one that reads disabled is pressed all the same; the app validates it
-    /// on the press and acts only when the command is really available. It
-    /// has to be the only item that carries any of the shortcuts, found by a
-    /// search that read every menu: a key the Go menu kept from another
-    /// keyboard can belong to another command, and an app can give an editing
-    /// command the same key, so of two items either may be the one really
-    /// available, and a search cut short may have missed the second. An
-    /// enabled item under any shortcut comes first.
+    /// What a menu reports can trail the app: right after Forward, Finder and
+    /// Safari still report Back as disabled for up to about a second, while
+    /// their menu may already have it enabled. With no enabled item under any
+    /// of the shortcuts, one that reads disabled is pressed all the same.
+    /// AppKit carries out a press only when the app's menu has the item
+    /// enabled at that moment, without validating it again, so an item that
+    /// really is off stays untouched. It has to be the only item that carries
+    /// any of the shortcuts, found by a search that read every menu: a key the
+    /// Go menu kept from another keyboard can belong to another command, and
+    /// an app can give an editing command the same key, so of two items either
+    /// may be the one really enabled, and a search cut short may have missed
+    /// the second. An enabled item under any shortcut comes first.
     static func itemToPress<Item>(enabled: [Item?], disabled: [[Item]], searchedInFull: Bool)
         -> (item: Item, shortcut: Int, readEnabled: Bool)? {
         if let index = enabled.firstIndex(where: { $0 != nil }), let item = enabled[index] {
