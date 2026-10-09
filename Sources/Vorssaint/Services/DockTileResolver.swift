@@ -24,12 +24,14 @@ enum DockTileResolver {
                             in items: [AXUIElement],
                             bundlePath: String) -> NSRunningApplication? {
         let instances = runningInstances(bundlePath: bundlePath)
+        guard let first = instances.first, items.indices.contains(index) else { return nil }
+        let tile = items[index]
         // The case virtually every click takes, and the one that runs inside the
         // click tap's Accessibility budget: a single instance needs no ordinal,
-        // so it costs no extra AX round trip at all.
-        guard instances.count > 1 else { return instances.first }
-        guard items.indices.contains(index) else { return nil }
-        let tile = items[index]
+        // only one AX round trip for whether this tile shows it running.
+        guard instances.count > 1 else {
+            return soleInstanceIsBehind(tile, bundlePath: bundlePath, items: { items }) ? first : nil
+        }
         return instance(forTile: tile,
                         amongTiles: tiles(in: items, bundlePath: bundlePath, including: tile),
                         instances: instances,
@@ -41,10 +43,11 @@ enum DockTileResolver {
         /// No tile of a running app, so the caller keeps whatever fallback it
         /// had.
         case unknown
-        /// A tile of an app running as several processes that none of them
-        /// stands behind right now: one kept in the Dock after its instance
-        /// quit, or one whose instance is still launching. A fallback by name
-        /// would land on another process, so the caller shows nothing.
+        /// A tile that none of its app's running processes stands behind
+        /// right now: one kept in the Dock after its instance quit while
+        /// another runs on, or one whose instance is still launching. A
+        /// fallback by name would land on another process, so the caller shows
+        /// nothing.
         case unpaired
         case instance(NSRunningApplication)
     }
@@ -55,21 +58,43 @@ enum DockTileResolver {
         guard let url = readURL(tile).url else { return .unknown }
         let bundlePath = url.standardizedFileURL.path
         let instances = runningInstances(bundlePath: bundlePath)
-        guard instances.count > 1 else { return instances.first.map { .instance($0) } ?? .unknown }
-        // Reached only once the bundle turns out to have several instances, so
-        // the extra AXParent and AXChildren reads stay off the ordinary path.
-        let tiles: TileList?
-        if let parent = elementAttribute(tile, kAXParentAttribute as String),
-           stringAttribute(parent, kAXRoleAttribute as String) == "AXList",
-           let items = elementArray(parent, kAXChildrenAttribute as String) {
-            tiles = self.tiles(in: items, bundlePath: bundlePath, including: tile)
-        } else {
-            // Nothing to compare against: only a tile paired before keeps
-            // its process.
-            tiles = nil
+        guard let first = instances.first else { return .unknown }
+        guard instances.count > 1 else {
+            return soleInstanceIsBehind(tile, bundlePath: bundlePath, items: { dockItems(holding: tile) })
+                ? .instance(first) : .unpaired
+        }
+        // Without the list there is nothing to compare against: only a tile
+        // paired before keeps its process.
+        let tiles = dockItems(holding: tile).map {
+            self.tiles(in: $0, bundlePath: bundlePath, including: tile)
         }
         return instance(forTile: tile, amongTiles: tiles, instances: instances, bundlePath: bundlePath)
             .map { .instance($0) } ?? .unpaired
+    }
+
+    /// The Dock's item list a hit-tested tile sits in. Read only for a bundle
+    /// with several instances or a tile that reads not running, so the extra
+    /// AXParent and AXChildren reads stay off the ordinary path.
+    private static func dockItems(holding tile: AXUIElement) -> [AXUIElement]? {
+        guard let parent = elementAttribute(tile, kAXParentAttribute as String),
+              stringAttribute(parent, kAXRoleAttribute as String) == "AXList"
+        else { return nil }
+        return elementArray(parent, kAXChildrenAttribute as String)
+    }
+
+    /// Whether the one running instance of the bundle stands behind `tile`.
+    /// `items` reads the Dock list holding it, which only a tile that reads
+    /// not running needs.
+    private static func soleInstanceIsBehind(_ tile: AXUIElement,
+                                             bundlePath: String,
+                                             items: () -> [AXUIElement]?) -> Bool {
+        DockClickSupport.soleInstanceIsBehindTile(
+            tileReadsRunning: readRunning(tile).isRunning,
+            anotherTileReadsRunning: {
+                guard let list = items() else { return false }
+                return tiles(in: list, bundlePath: bundlePath, including: tile).tiles
+                    .contains { !CFEqual($0, tile) }
+            })
     }
 
     /// Every live, regular process running this exact bundle. Only regular apps
@@ -90,11 +115,11 @@ enum DockTileResolver {
     }
 
     /// Reads AXURL from the Dock for every item, and AXIsApplicationRunning for
-    /// the tiles of this bundle, which only apps with several instances pay
-    /// for. A tile kept in the Dock after its instance quit shows no running
-    /// app and takes no instance, so it cannot push the running tiles out of
-    /// launch order. The tile being resolved counts whatever its URL read says
-    /// this time.
+    /// the tiles of this bundle, which only apps with several instances, or a
+    /// tile that reads not running, pay for. A tile kept in the Dock after its
+    /// instance quit shows no running app and takes no instance, so it cannot
+    /// push the running tiles out of launch order. The tile being resolved
+    /// counts whatever its URL read says this time.
     private static func tiles(in items: [AXUIElement],
                               bundlePath: String,
                               including tile: AXUIElement) -> TileList {

@@ -1337,6 +1337,20 @@ enum UtilitiesFeatureTests {
         suite.expect(DockClickSupport.launchTime(processStartMicroseconds: nil, launchDate: nil) == nil,
                      "an instance with neither time stays unknown")
 
+        // A tile kept in the Dock after its instance quit stays next to the
+        // tile of the instance left, reading not running.
+        var otherTilesRead = false
+        let runningTile = DockClickSupport.soleInstanceIsBehindTile(
+            tileReadsRunning: true, anotherTileReadsRunning: { otherTilesRead = true; return true })
+        suite.expect(runningTile && !otherTilesRead,
+                     "a tile that reads running stands for the one instance, with no read of the other tiles")
+        suite.expect(!DockClickSupport.soleInstanceIsBehindTile(tileReadsRunning: false,
+                                                                anotherTileReadsRunning: { true }),
+                     "a tile kept after its instance quit leaves the instance left to that instance's tile")
+        suite.expect(DockClickSupport.soleInstanceIsBehindTile(tileReadsRunning: false,
+                                                               anotherTileReadsRunning: { false }),
+                     "a tile that reads not running keeps the one instance while no other tile reads running")
+
         // MARK: Quick toggles
 
         suite.expect(QuickTogglesSupport.emptyTrashSource == "tell application \"Finder\" to empty trash",

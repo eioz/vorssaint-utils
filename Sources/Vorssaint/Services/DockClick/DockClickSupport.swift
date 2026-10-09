@@ -381,6 +381,19 @@ enum DockClickSupport {
         complete && tileCount == instanceCount
     }
 
+    /// Whether the one running instance of an app stands behind a tile of it.
+    ///
+    /// A tile kept in the Dock after its own instance quit reads not running,
+    /// while the instance that is left runs on a tile of its own. A tile that
+    /// reads not running is passed over only when another tile of the app
+    /// reads running: with none, nothing places the instance elsewhere and the
+    /// tile keeps it. Finding the other tiles takes a read of the whole Dock
+    /// list, so only a tile that reads not running pays for it.
+    static func soleInstanceIsBehindTile(tileReadsRunning: Bool,
+                                         anotherTileReadsRunning: () -> Bool) -> Bool {
+        tileReadsRunning || !anotherTileReadsRunning()
+    }
+
     /// When an instance started, as seconds since the reference date. The
     /// kernel's process start time comes first because every process has one:
     /// Launch Services dates only the apps it opened, so an instance started by
