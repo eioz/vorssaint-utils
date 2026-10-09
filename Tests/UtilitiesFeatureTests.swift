@@ -1264,6 +1264,25 @@ enum UtilitiesFeatureTests {
                                     DockAppInstance(pid: 600, launchTime: nil)]) == 0,
                      "with no launch times at all pid order stands in for launch order")
 
+        // An instance started by running its executable directly has no
+        // launch date; its process start time keeps it in its real place.
+        let openedEarlier = DockClickSupport.launchTime(
+            processStartMicroseconds: nil, launchDate: Date(timeIntervalSince1970: 1_700_000_000))
+        let startedDirectlyLater = DockClickSupport.launchTime(
+            processStartMicroseconds: 1_700_000_060_000_000, launchDate: nil)
+        suite.expect(DockClickSupport.instanceIndex(
+                        tileOrdinal: 0,
+                        instances: [DockAppInstance(pid: 2, launchTime: startedDirectlyLater),
+                                    DockAppInstance(pid: 1, launchTime: openedEarlier)]) == 1,
+                     "a newer instance started without Launch Services does not take the first tile")
+        suite.expect(DockClickSupport.launchTime(
+                        processStartMicroseconds: 1_700_000_000_500_000,
+                        launchDate: Date(timeIntervalSince1970: 1_800_000_000))
+                        == Date(timeIntervalSince1970: 1_700_000_000.5).timeIntervalSinceReferenceDate,
+                     "the process start time wins over the launch date and keeps its microseconds")
+        suite.expect(DockClickSupport.launchTime(processStartMicroseconds: nil, launchDate: nil) == nil,
+                     "an instance with neither time stays unknown")
+
         // MARK: Quick toggles
 
         suite.expect(QuickTogglesSupport.emptyTrashSource == "tell application \"Finder\" to empty trash",

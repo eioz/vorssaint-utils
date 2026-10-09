@@ -330,4 +330,17 @@ enum DockClickSupport {
         }
         return byAge[min(max(tileOrdinal, 0), byAge.count - 1)]
     }
+
+    /// When an instance started, as seconds since the reference date. The
+    /// kernel's process start time comes first because every process has one:
+    /// Launch Services dates only the apps it opened, so an instance started by
+    /// running its executable directly has no launch date and would otherwise
+    /// sort as the oldest and take the first tile.
+    static func launchTime(processStartMicroseconds: UInt64?, launchDate: Date?) -> TimeInterval? {
+        if let processStartMicroseconds {
+            return Date(timeIntervalSince1970: Double(processStartMicroseconds) / 1_000_000)
+                .timeIntervalSinceReferenceDate
+        }
+        return launchDate?.timeIntervalSinceReferenceDate
+    }
 }

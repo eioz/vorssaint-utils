@@ -84,7 +84,9 @@ enum DockTileResolver {
                                  tileOrdinal: Int) -> NSRunningApplication? {
         let described = instances.map {
             DockAppInstance(pid: $0.processIdentifier,
-                            launchTime: $0.launchDate?.timeIntervalSinceReferenceDate)
+                            launchTime: DockClickSupport.launchTime(
+                                processStartMicroseconds: KillProcessService.startTime(for: $0.processIdentifier),
+                                launchDate: $0.launchDate))
         }
         guard let slot = DockClickSupport.instanceIndex(tileOrdinal: tileOrdinal,
                                                         instances: described) else { return nil }
