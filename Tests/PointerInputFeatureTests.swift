@@ -489,6 +489,18 @@ enum PointerInputFeatureTests {
                "prefix matching stops at the org.mozilla. namespace boundary")
         suite.expect(!MouseNavigationSupport.shouldPassThrough(bundleIdentifier: nil),
                "an unknown frontmost app keeps the navigation behavior")
+        // Right after Forward, Finder and Safari still report Back as disabled
+        // for up to about a second; a quick change of direction must press it.
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: nil as String?, disabled: "Back")?.item == "Back",
+               "a Back that still reads disabled is pressed, so a quick change of direction goes through")
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: nil as String?, disabled: "Back")?.readEnabled == false,
+               "a press on an item that read disabled is marked, so its refusal posts no shortcut")
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: "Back", disabled: "Indent")?.item == "Back",
+               "an item that reads enabled wins over one that reads disabled")
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: "Back", disabled: nil)?.readEnabled == true,
+               "an item that reads enabled keeps its shortcut fallback")
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: nil as String?, disabled: nil) == nil,
+               "with no item carrying the shortcut there is nothing to press")
 
         // MARK: Event timestamps at the HID tap (issue #1689)
 

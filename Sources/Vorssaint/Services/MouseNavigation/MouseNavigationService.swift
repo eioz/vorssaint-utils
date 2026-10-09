@@ -292,10 +292,10 @@ final class MouseNavigationService: ObservableObject {
         // side click must never touch the document.
     }
 
-    /// Prefer the app's actual enabled menu item. This preserves app-specific
+    /// Prefer the app's actual menu item. This preserves app-specific
     /// behavior, and the shortcut looked for is the one this keyboard carries.
-    /// The synthetic shortcut below is only a fallback when the found item
-    /// refuses AXPress.
+    /// The synthetic shortcut below is only a fallback when an item that read
+    /// enabled refuses AXPress.
     private func pressMenuItem(shortcut: MouseNavigationKeys.Shortcut) -> MenuPressOutcome {
         guard let app = NSWorkspace.shared.frontmostApplication else { return .noNavigationCommand }
         let application = AXUIElementCreateApplication(app.processIdentifier)
@@ -307,18 +307,29 @@ final class MouseNavigationService: ObservableObject {
             return .noNavigationCommand
         }
         var visited = 0
-        guard let item = findMenuItem(in: menuBar,
-                                      shortcut: shortcut,
-                                      depth: 0,
-                                      visited: &visited) else { return .noNavigationCommand }
-        return AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
-            ? .pressed : .pressFailed
+        var disabledMatch: AXUIElement?
+        let enabledMatch = findMenuItem(in: menuBar,
+                                        shortcut: shortcut,
+                                        depth: 0,
+                                        visited: &visited,
+                                        disabledMatch: &disabledMatch)
+        guard let target = MouseNavigationSupport.itemToPress(enabled: enabledMatch,
+                                                              disabled: disabledMatch) else {
+            return .noNavigationCommand
+        }
+        guard AXUIElementPerformAction(target.item, kAXPressAction as CFString) == .success else {
+            // Only an item that read enabled falls back to its shortcut. One
+            // that read disabled may really be off.
+            return target.readEnabled ? .pressFailed : .noNavigationCommand
+        }
+        return .pressed
     }
 
     private func findMenuItem(in element: AXUIElement,
                               shortcut: MouseNavigationKeys.Shortcut,
                               depth: Int,
-                              visited: inout Int) -> AXUIElement? {
+                              visited: inout Int,
+                              disabledMatch: inout AXUIElement?) -> AXUIElement? {
         // Depth 3 is a direct item of a top level menu (bar, bar item, menu,
         // item). Back and Forward always live there (Go, History); the same
         // key equivalents inside submenus belong to editing commands and are
@@ -333,9 +344,9 @@ final class MouseNavigationService: ObservableObject {
         if MouseNavigationSupport.matchesCommand(menuCharacter: command,
                                                  menuModifiers: modifiers?.uint32Value,
                                                  character: shortcut.character,
-                                                 modifiers: shortcut.menuModifiers),
-           enabled?.boolValue != false {
-            return element
+                                                 modifiers: shortcut.menuModifiers) {
+            if enabled?.boolValue != false { return element }
+            if disabledMatch == nil { disabledMatch = element }
         }
 
         // Items at the depth cap cannot host a match below them; skipping
@@ -346,7 +357,8 @@ final class MouseNavigationService: ObservableObject {
             if let match = findMenuItem(in: child,
                                         shortcut: shortcut,
                                         depth: depth + 1,
-                                        visited: &visited) {
+                                        visited: &visited,
+                                        disabledMatch: &disabledMatch) {
                 return match
             }
         }

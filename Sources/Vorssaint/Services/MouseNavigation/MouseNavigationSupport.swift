@@ -75,6 +75,18 @@ enum MouseNavigationSupport {
         return first.isUppercase
     }
 
+    /// The menu item to press for Back or Forward, and whether it read
+    /// enabled. A menu reports the state its items were last validated in,
+    /// which trails the app: right after Forward, Back still reads disabled
+    /// for up to about a second. With no enabled item carrying the shortcut,
+    /// one that reads disabled is pressed all the same; the app validates it
+    /// on the press and acts only when the command is really available.
+    static func itemToPress<Item>(enabled: Item?, disabled: Item?) -> (item: Item, readEnabled: Bool)? {
+        if let enabled { return (enabled, true) }
+        if let disabled { return (disabled, false) }
+        return nil
+    }
+
     /// Apps whose side buttons must reach them untouched. These handle Back
     /// and Forward themselves (or forward the raw press to a guest system),
     /// and none of them exposes the command as a menu bar item the AX path
