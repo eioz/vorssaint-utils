@@ -538,16 +538,24 @@ enum PointerInputFeatureTests {
                "menus read in full without any of the shortcuts count as having no command")
         suite.expect(MouseNavigationSupport.miss(sawDisabledItem: false, answeredInFull: false) == .unanswered,
                "menus not read in full may still hold a shortcut")
-        suite.expect(MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: true, pointerOverApp: true),
+        suite.expect(MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: true,
+                                                        pressedOverApp: true, pointerOverApp: true),
                "an app with neither shortcut gets its side click back")
-        suite.expect(!MouseNavigationSupport.returnsClick(miss: .disabled, appStillInFront: true, pointerOverApp: true),
+        suite.expect(!MouseNavigationSupport.returnsClick(miss: .disabled, appStillInFront: true,
+                                                         pressedOverApp: true, pointerOverApp: true),
                "a Back or Forward that refused its press keeps the click")
-        suite.expect(!MouseNavigationSupport.returnsClick(miss: .unanswered, appStillInFront: true, pointerOverApp: true),
+        suite.expect(!MouseNavigationSupport.returnsClick(miss: .unanswered, appStillInFront: true,
+                                                         pressedOverApp: true, pointerOverApp: true),
                "menus that did not answer in full keep the click")
-        suite.expect(!MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: false, pointerOverApp: true),
+        suite.expect(!MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: false,
+                                                         pressedOverApp: true, pointerOverApp: true),
                "a click is not handed back once another app came to the front during the search")
-        suite.expect(!MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: true, pointerOverApp: false),
+        suite.expect(!MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: true,
+                                                         pressedOverApp: true, pointerOverApp: false),
                "a click is not handed back once the pointer moved onto another app's window")
+        suite.expect(!MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: true,
+                                                         pressedOverApp: false, pointerOverApp: true),
+               "a click pressed over another app's window is not handed back after the pointer moved onto this one")
 
         // MARK: Event timestamps at the HID tap (issue #1689)
 

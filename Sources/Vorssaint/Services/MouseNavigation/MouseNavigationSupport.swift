@@ -132,13 +132,15 @@ enum MouseNavigationSupport {
     /// navigates with it, a remote session that forwards it), and swallowing
     /// the click there leaves the button dead. A command that refused its
     /// press, or menus that did not answer, keep the click, since the app may
-    /// well have the command. So does a switch to another app while the menus
-    /// were searched, or a pointer that moved onto another app's window: the
-    /// click was never meant for that app.
+    /// well have the command. So does a press that landed on another app's
+    /// window, a switch to another app while the menus were searched, or a
+    /// pointer that moved onto another app's window: the click was never
+    /// meant for that app.
     static func returnsClick(miss: MouseNavigationMenuMiss,
                              appStillInFront: Bool,
+                             pressedOverApp: Bool,
                              pointerOverApp: Bool) -> Bool {
-        miss == .absent && appStillInFront && pointerOverApp
+        miss == .absent && appStillInFront && pressedOverApp && pointerOverApp
     }
 
     /// Apps whose side buttons must reach them untouched. These handle Back

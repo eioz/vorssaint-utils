@@ -241,7 +241,14 @@ final class MouseNavigationService: ObservableObject {
             }
             passThroughButtons.remove(buttonNumber)
             let pressedFor = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            let press = event.copy().map { SwallowedPress(down: $0, appPID: pressedFor) }
+            // The press itself goes to the window under the pointer, which can
+            // belong to an app behind the one in front. One window server
+            // query reads it here, before another window can take its place;
+            // its owner is only looked up if the click goes back.
+            let pressedOn = FocusFollowsMouseService.receivingWindow(at: event.location)
+            let press = event.copy().map {
+                SwallowedPress(down: $0, appPID: pressedFor, windowID: pressedOn)
+            }
             // Leave the event-tap callback immediately; AX menu traversal can
             // take a few milliseconds and must never let the tap time out.
             DispatchQueue.main.async { [weak self] in
@@ -277,11 +284,13 @@ final class MouseNavigationService: ObservableObject {
         case missed(MouseNavigationMenuMiss)
     }
 
-    /// A side-button Down this tap swallowed, and the app in front when the
-    /// button went down, the one the click is for.
+    /// A side-button Down this tap swallowed, the app in front when the
+    /// button went down, the one the click is for, and the window the press
+    /// landed on.
     private struct SwallowedPress {
         let down: CGEvent
         let appPID: pid_t?
+        let windowID: CGWindowID?
     }
 
     /// What one look through the menus has found so far, for every shortcut
@@ -328,6 +337,8 @@ final class MouseNavigationService: ObservableObject {
                   MouseNavigationSupport.returnsClick(
                       miss: miss,
                       appStillInFront: NSWorkspace.shared.frontmostApplication?.processIdentifier
+                          == app.processIdentifier,
+                      pressedOverApp: press.windowID.flatMap(WindowServerSupport.ownerProcessID(ofWindowID:))
                           == app.processIdentifier,
                       pointerOverApp: Self.receivingProcess(at: pointer) == app.processIdentifier)
             else { return }
