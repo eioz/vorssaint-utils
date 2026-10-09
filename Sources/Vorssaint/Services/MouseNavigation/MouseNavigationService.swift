@@ -281,15 +281,15 @@ final class MouseNavigationService: ObservableObject {
         var visited = 0
         /// Per shortcut, the first item carrying it that read enabled.
         var enabledMatches: [AXUIElement?]
-        /// Per shortcut, the first item carrying it that read disabled.
-        var disabledMatches: [AXUIElement?]
+        /// Per shortcut, every item carrying it that read disabled.
+        var disabledMatches: [[AXUIElement]]
         /// False once a question timed out or the cap cut the search short.
         var answeredInFull = true
 
         init(shortcuts: [MouseNavigationKeys.Shortcut]) {
             self.shortcuts = shortcuts
             enabledMatches = Array(repeating: nil, count: shortcuts.count)
-            disabledMatches = enabledMatches
+            disabledMatches = Array(repeating: [], count: shortcuts.count)
         }
 
         /// An enabled item under the most likely shortcut cannot be beaten.
@@ -364,8 +364,8 @@ final class MouseNavigationService: ObservableObject {
                                                     modifiers: shortcut.menuModifiers) {
             if enabled?.boolValue != false {
                 if search.enabledMatches[index] == nil { search.enabledMatches[index] = element }
-            } else if search.disabledMatches[index] == nil {
-                search.disabledMatches[index] = element
+            } else {
+                search.disabledMatches[index].append(element)
             }
         }
 

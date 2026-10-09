@@ -76,31 +76,32 @@ enum MouseNavigationSupport {
     }
 
     /// The menu item to press for Back or Forward, the shortcut it carries,
-    /// and whether it read enabled. `enabled` and `disabled` hold, for each
-    /// shortcut the command may sit on, most likely first, the first item
-    /// found carrying it in that state.
+    /// and whether it read enabled. For each shortcut the command may sit on,
+    /// most likely first, `enabled` holds the first item found carrying it
+    /// that read enabled, and `disabled` every item carrying it that read
+    /// disabled.
     ///
     /// A menu reports the state its items were last validated in, which
     /// trails the app: right after Forward, Back still reads disabled for up
     /// to about a second. With no enabled item under any of the shortcuts,
     /// one that reads disabled is pressed all the same; the app validates it
-    /// on the press and acts only when the command is really available. A key
-    /// the Go menu kept from another keyboard can belong to another command
-    /// in the app in front, though, so an enabled item under any shortcut
-    /// comes first, and an item that reads disabled is pressed only when a
-    /// search that read every menu found it under a single shortcut: either
-    /// of two may be the one really available, and a search cut short may
-    /// have missed the other.
-    static func itemToPress<Item>(enabled: [Item?], disabled: [Item?], searchedInFull: Bool)
+    /// on the press and acts only when the command is really available. It
+    /// has to be the only item that carries any of the shortcuts, found by a
+    /// search that read every menu: a key the Go menu kept from another
+    /// keyboard can belong to another command, and an app can give an editing
+    /// command the same key, so of two items either may be the one really
+    /// available, and a search cut short may have missed the second. An
+    /// enabled item under any shortcut comes first.
+    static func itemToPress<Item>(enabled: [Item?], disabled: [[Item]], searchedInFull: Bool)
         -> (item: Item, shortcut: Int, readEnabled: Bool)? {
         if let index = enabled.firstIndex(where: { $0 != nil }), let item = enabled[index] {
             return (item, index, true)
         }
-        let found = disabled.indices.filter { disabled[$0] != nil }
-        guard searchedInFull, found.count == 1, let index = found.first, let item = disabled[index] else {
-            return nil
+        let found = disabled.enumerated().flatMap { index, items in
+            items.map { (shortcut: index, item: $0) }
         }
-        return (item, index, false)
+        guard searchedInFull, found.count == 1, let only = found.first else { return nil }
+        return (only.item, only.shortcut, false)
     }
 
     /// Apps whose side buttons must reach them untouched. These handle Back
