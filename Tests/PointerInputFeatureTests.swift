@@ -532,6 +532,22 @@ enum PointerInputFeatureTests {
         suite.expect(MouseNavigationSupport.itemToPress(enabled: [nil, nil] as [String?], disabled: [[], []],
                                                         searchedInFull: true) == nil,
                "with no item carrying a shortcut there is nothing to press")
+        suite.expect(MouseNavigationSupport.miss(sawDisabledItem: true, answeredInFull: true) == .disabled,
+               "items that read disabled keep the click even when none of them was pressed")
+        suite.expect(MouseNavigationSupport.miss(sawDisabledItem: false, answeredInFull: true) == .absent,
+               "menus read in full without any of the shortcuts count as having no command")
+        suite.expect(MouseNavigationSupport.miss(sawDisabledItem: false, answeredInFull: false) == .unanswered,
+               "menus not read in full may still hold a shortcut")
+        suite.expect(MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: true, pointerOverApp: true),
+               "an app with neither shortcut gets its side click back")
+        suite.expect(!MouseNavigationSupport.returnsClick(miss: .disabled, appStillInFront: true, pointerOverApp: true),
+               "a Back or Forward that refused its press keeps the click")
+        suite.expect(!MouseNavigationSupport.returnsClick(miss: .unanswered, appStillInFront: true, pointerOverApp: true),
+               "menus that did not answer in full keep the click")
+        suite.expect(!MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: false, pointerOverApp: true),
+               "a click is not handed back once another app came to the front during the search")
+        suite.expect(!MouseNavigationSupport.returnsClick(miss: .absent, appStillInFront: true, pointerOverApp: false),
+               "a click is not handed back once the pointer moved onto another app's window")
 
         // MARK: Event timestamps at the HID tap (issue #1689)
 

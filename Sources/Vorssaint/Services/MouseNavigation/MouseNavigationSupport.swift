@@ -8,6 +8,19 @@ enum MouseNavigationDirection: Hashable, CaseIterable {
     case forward
 }
 
+/// Why a look through the frontmost app's menus pressed nothing.
+enum MouseNavigationMenuMiss: Equatable {
+    /// Only items that read disabled carry the shortcuts, and none was
+    /// pressed: the press was refused, or which item to press was unclear.
+    case disabled
+    /// The app answered every question and no item carries any of the
+    /// shortcuts.
+    case absent
+    /// A question timed out or the search hit its cap, so the menus may
+    /// still hold one of the shortcuts.
+    case unanswered
+}
+
 enum MouseNavigationSupport {
     /// CoreGraphics numbers the first two side buttons after left, right and
     /// middle as 3 and 4. These are what standard Back and Forward buttons on
@@ -103,6 +116,29 @@ enum MouseNavigationSupport {
         }
         guard searchedInFull, found.count == 1, let only = found.first else { return nil }
         return (only.item, only.shortcut, false)
+    }
+
+    /// Why a look through the menus that pressed nothing came up empty. An
+    /// item that reads disabled means the app may well have the command,
+    /// whether or not it was pressed.
+    static func miss(sawDisabledItem: Bool, answeredInFull: Bool) -> MouseNavigationMenuMiss {
+        if sawDisabledItem { return .disabled }
+        return answeredInFull ? .absent : .unanswered
+    }
+
+    /// Whether a side click that pressed no menu command goes back to the
+    /// app. Only an app that answered in full and has neither shortcut gets
+    /// it: such an app may handle the raw button itself (an editor that
+    /// navigates with it, a remote session that forwards it), and swallowing
+    /// the click there leaves the button dead. A command that refused its
+    /// press, or menus that did not answer, keep the click, since the app may
+    /// well have the command. So does a switch to another app while the menus
+    /// were searched, or a pointer that moved onto another app's window: the
+    /// click was never meant for that app.
+    static func returnsClick(miss: MouseNavigationMenuMiss,
+                             appStillInFront: Bool,
+                             pointerOverApp: Bool) -> Bool {
+        miss == .absent && appStillInFront && pointerOverApp
     }
 
     /// Apps whose side buttons must reach them untouched. These handle Back

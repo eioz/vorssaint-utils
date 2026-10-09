@@ -14,7 +14,8 @@ import UniformTypeIdentifiers
 /// `MouseNavigationKeys`); other apps keep working when they provide the same
 /// menu command.
 /// Apps that handle the side buttons themselves (some browsers, virtual
-/// machines, remote screens) receive the untouched events instead. Nothing is installed
+/// machines, remote screens) receive the untouched events instead, and an app
+/// with neither command gets its click back. Nothing is installed
 /// while the opt-in feature is off. Requires Accessibility for the modifying
 /// event tap and menu action.
 final class MouseNavigationService: ObservableObject {
@@ -239,10 +240,12 @@ final class MouseNavigationService: ObservableObject {
                 return Unmanaged.passUnretained(event)
             }
             passThroughButtons.remove(buttonNumber)
+            let pressedFor = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let press = event.copy().map { SwallowedPress(down: $0, appPID: pressedFor) }
             // Leave the event-tap callback immediately; AX menu traversal can
             // take a few milliseconds and must never let the tap time out.
             DispatchQueue.main.async { [weak self] in
-                self?.perform(direction)
+                self?.perform(direction, press: press)
             }
             return nil
         }
@@ -271,7 +274,14 @@ final class MouseNavigationService: ObservableObject {
     private enum MenuPressOutcome {
         case pressed
         case pressFailed(MouseNavigationKeys.Shortcut)
-        case noNavigationCommand
+        case missed(MouseNavigationMenuMiss)
+    }
+
+    /// A side-button Down this tap swallowed, and the app in front when the
+    /// button went down, the one the click is for.
+    private struct SwallowedPress {
+        let down: CGEvent
+        let appPID: pid_t?
     }
 
     /// What one look through the menus has found so far, for every shortcut
@@ -296,18 +306,32 @@ final class MouseNavigationService: ObservableObject {
         var isSettled: Bool { enabledMatches.isEmpty || enabledMatches[0] != nil }
     }
 
-    private func perform(_ direction: MouseNavigationDirection) {
-        switch pressMenuItem(shortcuts: MouseNavigationKeys.candidates(for: direction)) {
+    private func perform(_ direction: MouseNavigationDirection, press: SwallowedPress?) {
+        // Read once, so the menus searched and the app a click goes back to
+        // are the same one. Once another app has come forward since the press,
+        // the click is dropped rather than sent to it.
+        let app = NSWorkspace.shared.frontmostApplication
+        if let pressedFor = press?.appPID, app?.processIdentifier != pressedFor { return }
+        switch pressMenuItem(shortcuts: MouseNavigationKeys.candidates(for: direction), in: app) {
         case .pressed:
             return
         case .pressFailed(let shortcut):
             postCommand(shortcut)
-        case .noNavigationCommand:
+        case .missed(let miss):
             // No verified Back or Forward in this app. Posting the shortcut
             // blindly is not an option: the same keys deeper in other menus are
             // editing commands (shift code left, rearrange layers) and a stray
             // side click must never touch the document.
-            return
+            // One reading of the pointer serves both the check and the click, so
+            // the click lands where the check looked.
+            guard let press, let app, let pointer = CGEvent(source: nil)?.location,
+                  MouseNavigationSupport.returnsClick(
+                      miss: miss,
+                      appStillInFront: NSWorkspace.shared.frontmostApplication?.processIdentifier
+                          == app.processIdentifier,
+                      pointerOverApp: Self.receivingProcess(at: pointer) == app.processIdentifier)
+            else { return }
+            handBack(press, at: pointer)
         }
     }
 
@@ -316,27 +340,29 @@ final class MouseNavigationService: ObservableObject {
     /// carries. One look through the menus serves all of them. The synthetic
     /// shortcut below is only a fallback when an item that read enabled
     /// refuses AXPress.
-    private func pressMenuItem(shortcuts: [MouseNavigationKeys.Shortcut]) -> MenuPressOutcome {
-        guard let app = NSWorkspace.shared.frontmostApplication else { return .noNavigationCommand }
+    private func pressMenuItem(shortcuts: [MouseNavigationKeys.Shortcut],
+                               in app: NSRunningApplication?) -> MenuPressOutcome {
+        guard let app else { return .missed(.unanswered) }
         let application = AXUIElementCreateApplication(app.processIdentifier)
         // A busy target must not hold Vorssaint's main thread for AX's
         // multi-second default timeout. Child menu elements get the same
         // bound as they are traversed below.
         AXUIElementSetMessagingTimeout(application, 0.35)
         var search = MenuSearch(shortcuts: shortcuts)
-        guard let menuBar: AXUIElement = attribute(kAXMenuBarAttribute, from: application, search: &search) else {
-            return .noNavigationCommand
+        if let menuBar: AXUIElement = attribute(kAXMenuBarAttribute, from: application, search: &search) {
+            findMenuItems(in: menuBar, depth: 0, search: &search)
         }
-        findMenuItems(in: menuBar, depth: 0, search: &search)
         guard let target = MouseNavigationSupport.itemToPress(enabled: search.enabledMatches,
                                                               disabled: search.disabledMatches,
                                                               searchedInFull: search.answeredInFull) else {
-            return .noNavigationCommand
+            return .missed(MouseNavigationSupport.miss(
+                sawDisabledItem: search.disabledMatches.contains { !$0.isEmpty },
+                answeredInFull: search.answeredInFull))
         }
         guard AXUIElementPerformAction(target.item, kAXPressAction as CFString) == .success else {
             // Only an item that read enabled falls back to its shortcut. One
             // that read disabled may really be off.
-            return target.readEnabled ? .pressFailed(shortcuts[target.shortcut]) : .noNavigationCommand
+            return target.readEnabled ? .pressFailed(shortcuts[target.shortcut]) : .missed(.disabled)
         }
         return .pressed
     }
@@ -390,6 +416,32 @@ final class MouseNavigationService: ObservableObject {
         }
         guard error == .success else { return nil }
         return value as? T
+    }
+
+    /// The process whose window a click at `point` would reach, found the
+    /// way AppKit routes clicks, so a panel above the app counts as the panel.
+    private static func receivingProcess(at point: CGPoint) -> pid_t? {
+        FocusFollowsMouseService.receivingWindow(at: point)
+            .flatMap(WindowServerSupport.ownerProcessID(ofWindowID:))
+    }
+
+    /// Puts a swallowed side click back for an app with no Back or Forward to
+    /// press, so it gets the button it would get with this feature off. It
+    /// goes back whole, the release right behind the press, and the real
+    /// release that follows is swallowed with the rest of the gesture. A hold
+    /// arrives as a plain click: once this tap has swallowed a press, neither
+    /// the session's nor the HID system's button state reports the button as
+    /// down, so a press still held cannot be told from one already over.
+    /// Posted past this tap, at the current time and where the pointer was
+    /// just read, so the pointer never jumps back to where the press began.
+    private func handBack(_ press: SwallowedPress, at pointer: CGPoint) {
+        let down = press.down
+        down.location = pointer
+        down.timestamp = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        guard let up = down.copy() else { return }
+        up.type = .otherMouseUp
+        down.post(tap: .cgSessionEventTap)
+        up.post(tap: .cgSessionEventTap)
     }
 
     private func postCommand(_ shortcut: MouseNavigationKeys.Shortcut) {
