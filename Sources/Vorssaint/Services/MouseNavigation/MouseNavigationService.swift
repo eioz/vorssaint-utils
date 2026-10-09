@@ -283,6 +283,8 @@ final class MouseNavigationService: ObservableObject {
         var enabledMatches: [AXUIElement?]
         /// Per shortcut, the first item carrying it that read disabled.
         var disabledMatches: [AXUIElement?]
+        /// False once a question timed out or the cap cut the search short.
+        var answeredInFull = true
 
         init(shortcuts: [MouseNavigationKeys.Shortcut]) {
             self.shortcuts = shortcuts
@@ -321,13 +323,14 @@ final class MouseNavigationService: ObservableObject {
         // multi-second default timeout. Child menu elements get the same
         // bound as they are traversed below.
         AXUIElementSetMessagingTimeout(application, 0.35)
-        guard let menuBar: AXUIElement = attribute(kAXMenuBarAttribute, from: application) else {
+        var search = MenuSearch(shortcuts: shortcuts)
+        guard let menuBar: AXUIElement = attribute(kAXMenuBarAttribute, from: application, search: &search) else {
             return .noNavigationCommand
         }
-        var search = MenuSearch(shortcuts: shortcuts)
         findMenuItems(in: menuBar, depth: 0, search: &search)
         guard let target = MouseNavigationSupport.itemToPress(enabled: search.enabledMatches,
-                                                              disabled: search.disabledMatches) else {
+                                                              disabled: search.disabledMatches,
+                                                              searchedInFull: search.answeredInFull) else {
             return .noNavigationCommand
         }
         guard AXUIElementPerformAction(target.item, kAXPressAction as CFString) == .success else {
@@ -343,13 +346,17 @@ final class MouseNavigationService: ObservableObject {
         // item). Back and Forward always live there (Go, History); the same
         // key equivalents inside submenus belong to editing commands and are
         // deliberately out of reach. This also keeps the traversal short.
-        guard depth <= 3, search.visited < 600, !search.isSettled else { return }
+        guard depth <= 3, !search.isSettled else { return }
+        guard search.visited < 600 else {
+            search.answeredInFull = false
+            return
+        }
         search.visited += 1
         AXUIElementSetMessagingTimeout(element, 0.35)
 
-        let command: String? = attribute(kAXMenuItemCmdCharAttribute, from: element)
-        let modifiers: NSNumber? = attribute(kAXMenuItemCmdModifiersAttribute, from: element)
-        let enabled: NSNumber? = attribute(kAXEnabledAttribute, from: element)
+        let command: String? = attribute(kAXMenuItemCmdCharAttribute, from: element, search: &search)
+        let modifiers: NSNumber? = attribute(kAXMenuItemCmdModifiersAttribute, from: element, search: &search)
+        let enabled: NSNumber? = attribute(kAXEnabledAttribute, from: element, search: &search)
         for (index, shortcut) in search.shortcuts.enumerated()
         where MouseNavigationSupport.matchesCommand(menuCharacter: command,
                                                     menuModifiers: modifiers?.uint32Value,
@@ -365,17 +372,23 @@ final class MouseNavigationService: ObservableObject {
         // Items at the depth cap cannot host a match below them; skipping
         // the children copy saves one AX round trip per menu item.
         guard depth < 3 else { return }
-        let children: [AXUIElement] = attribute(kAXChildrenAttribute, from: element) ?? []
+        let children: [AXUIElement] = attribute(kAXChildrenAttribute, from: element, search: &search) ?? []
         for child in children {
             findMenuItems(in: child, depth: depth + 1, search: &search)
         }
     }
 
-    private func attribute<T>(_ name: String, from element: AXUIElement) -> T? {
+    private func attribute<T>(_ name: String, from element: AXUIElement, search: inout MenuSearch) -> T? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
-            return nil
+        let error = AXUIElementCopyAttributeValue(element, name as CFString, &value)
+        // Only a value, or a plain statement that there is none, answers the
+        // question. A timeout, or an element the app replaced mid-search,
+        // leaves it open, and the search no longer speaks for every item.
+        switch error {
+        case .success, .noValue, .attributeUnsupported: break
+        default: search.answeredInFull = false
         }
+        guard error == .success else { return nil }
         return value as? T
     }
 
