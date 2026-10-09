@@ -75,15 +75,27 @@ enum MouseNavigationSupport {
         return first.isUppercase
     }
 
-    /// The menu item to press for Back or Forward, and whether it read
-    /// enabled. A menu reports the state its items were last validated in,
-    /// which trails the app: right after Forward, Back still reads disabled
-    /// for up to about a second. With no enabled item carrying the shortcut,
+    /// The menu item to press for Back or Forward, the shortcut it carries,
+    /// and whether it read enabled. `enabled` and `disabled` hold, for each
+    /// shortcut the command may sit on, most likely first, the first item
+    /// found carrying it in that state.
+    ///
+    /// A menu reports the state its items were last validated in, which
+    /// trails the app: right after Forward, Back still reads disabled for up
+    /// to about a second. With no enabled item under any of the shortcuts,
     /// one that reads disabled is pressed all the same; the app validates it
-    /// on the press and acts only when the command is really available.
-    static func itemToPress<Item>(enabled: Item?, disabled: Item?) -> (item: Item, readEnabled: Bool)? {
-        if let enabled { return (enabled, true) }
-        if let disabled { return (disabled, false) }
+    /// on the press and acts only when the command is really available. An
+    /// enabled item under a less likely shortcut still comes first, since a
+    /// key the Go menu kept from another keyboard can belong to another
+    /// command in the app in front.
+    static func itemToPress<Item>(enabled: [Item?], disabled: [Item?])
+        -> (item: Item, shortcut: Int, readEnabled: Bool)? {
+        if let index = enabled.firstIndex(where: { $0 != nil }), let item = enabled[index] {
+            return (item, index, true)
+        }
+        if let index = disabled.firstIndex(where: { $0 != nil }), let item = disabled[index] {
+            return (item, index, false)
+        }
         return nil
     }
 

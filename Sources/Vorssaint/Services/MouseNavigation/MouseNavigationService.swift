@@ -270,33 +270,51 @@ final class MouseNavigationService: ObservableObject {
 
     private enum MenuPressOutcome {
         case pressed
-        case pressFailed
+        case pressFailed(MouseNavigationKeys.Shortcut)
         case noNavigationCommand
     }
 
-    private func perform(_ direction: MouseNavigationDirection) {
-        for shortcut in MouseNavigationKeys.candidates(for: direction) {
-            switch pressMenuItem(shortcut: shortcut) {
-            case .pressed:
-                return
-            case .pressFailed:
-                postCommand(shortcut)
-                return
-            case .noNavigationCommand:
-                continue
-            }
+    /// What one look through the menus has found so far, for every shortcut
+    /// the command may sit on, most likely first.
+    private struct MenuSearch {
+        let shortcuts: [MouseNavigationKeys.Shortcut]
+        var visited = 0
+        /// Per shortcut, the first item carrying it that read enabled.
+        var enabledMatches: [AXUIElement?]
+        /// Per shortcut, the first item carrying it that read disabled.
+        var disabledMatches: [AXUIElement?]
+
+        init(shortcuts: [MouseNavigationKeys.Shortcut]) {
+            self.shortcuts = shortcuts
+            enabledMatches = Array(repeating: nil, count: shortcuts.count)
+            disabledMatches = enabledMatches
         }
-        // No verified Back or Forward in this app. Posting the shortcut
-        // blindly is not an option: the same keys deeper in other menus are
-        // editing commands (shift code left, rearrange layers) and a stray
-        // side click must never touch the document.
+
+        /// An enabled item under the most likely shortcut cannot be beaten.
+        var isSettled: Bool { enabledMatches.isEmpty || enabledMatches[0] != nil }
+    }
+
+    private func perform(_ direction: MouseNavigationDirection) {
+        switch pressMenuItem(shortcuts: MouseNavigationKeys.candidates(for: direction)) {
+        case .pressed:
+            return
+        case .pressFailed(let shortcut):
+            postCommand(shortcut)
+        case .noNavigationCommand:
+            // No verified Back or Forward in this app. Posting the shortcut
+            // blindly is not an option: the same keys deeper in other menus are
+            // editing commands (shift code left, rearrange layers) and a stray
+            // side click must never touch the document.
+            return
+        }
     }
 
     /// Prefer the app's actual menu item. This preserves app-specific
-    /// behavior, and the shortcut looked for is the one this keyboard carries.
-    /// The synthetic shortcut below is only a fallback when an item that read
-    /// enabled refuses AXPress.
-    private func pressMenuItem(shortcut: MouseNavigationKeys.Shortcut) -> MenuPressOutcome {
+    /// behavior, and the shortcuts looked for are the ones this keyboard
+    /// carries. One look through the menus serves all of them. The synthetic
+    /// shortcut below is only a fallback when an item that read enabled
+    /// refuses AXPress.
+    private func pressMenuItem(shortcuts: [MouseNavigationKeys.Shortcut]) -> MenuPressOutcome {
         guard let app = NSWorkspace.shared.frontmostApplication else { return .noNavigationCommand }
         let application = AXUIElementCreateApplication(app.processIdentifier)
         // A busy target must not hold Vorssaint's main thread for AX's
@@ -306,63 +324,51 @@ final class MouseNavigationService: ObservableObject {
         guard let menuBar: AXUIElement = attribute(kAXMenuBarAttribute, from: application) else {
             return .noNavigationCommand
         }
-        var visited = 0
-        var disabledMatch: AXUIElement?
-        let enabledMatch = findMenuItem(in: menuBar,
-                                        shortcut: shortcut,
-                                        depth: 0,
-                                        visited: &visited,
-                                        disabledMatch: &disabledMatch)
-        guard let target = MouseNavigationSupport.itemToPress(enabled: enabledMatch,
-                                                              disabled: disabledMatch) else {
+        var search = MenuSearch(shortcuts: shortcuts)
+        findMenuItems(in: menuBar, depth: 0, search: &search)
+        guard let target = MouseNavigationSupport.itemToPress(enabled: search.enabledMatches,
+                                                              disabled: search.disabledMatches) else {
             return .noNavigationCommand
         }
         guard AXUIElementPerformAction(target.item, kAXPressAction as CFString) == .success else {
             // Only an item that read enabled falls back to its shortcut. One
             // that read disabled may really be off.
-            return target.readEnabled ? .pressFailed : .noNavigationCommand
+            return target.readEnabled ? .pressFailed(shortcuts[target.shortcut]) : .noNavigationCommand
         }
         return .pressed
     }
 
-    private func findMenuItem(in element: AXUIElement,
-                              shortcut: MouseNavigationKeys.Shortcut,
-                              depth: Int,
-                              visited: inout Int,
-                              disabledMatch: inout AXUIElement?) -> AXUIElement? {
+    private func findMenuItems(in element: AXUIElement, depth: Int, search: inout MenuSearch) {
         // Depth 3 is a direct item of a top level menu (bar, bar item, menu,
         // item). Back and Forward always live there (Go, History); the same
         // key equivalents inside submenus belong to editing commands and are
         // deliberately out of reach. This also keeps the traversal short.
-        guard depth <= 3, visited < 600 else { return nil }
-        visited += 1
+        guard depth <= 3, search.visited < 600, !search.isSettled else { return }
+        search.visited += 1
         AXUIElementSetMessagingTimeout(element, 0.35)
 
         let command: String? = attribute(kAXMenuItemCmdCharAttribute, from: element)
         let modifiers: NSNumber? = attribute(kAXMenuItemCmdModifiersAttribute, from: element)
         let enabled: NSNumber? = attribute(kAXEnabledAttribute, from: element)
-        if MouseNavigationSupport.matchesCommand(menuCharacter: command,
-                                                 menuModifiers: modifiers?.uint32Value,
-                                                 character: shortcut.character,
-                                                 modifiers: shortcut.menuModifiers) {
-            if enabled?.boolValue != false { return element }
-            if disabledMatch == nil { disabledMatch = element }
+        for (index, shortcut) in search.shortcuts.enumerated()
+        where MouseNavigationSupport.matchesCommand(menuCharacter: command,
+                                                    menuModifiers: modifiers?.uint32Value,
+                                                    character: shortcut.character,
+                                                    modifiers: shortcut.menuModifiers) {
+            if enabled?.boolValue != false {
+                if search.enabledMatches[index] == nil { search.enabledMatches[index] = element }
+            } else if search.disabledMatches[index] == nil {
+                search.disabledMatches[index] = element
+            }
         }
 
         // Items at the depth cap cannot host a match below them; skipping
         // the children copy saves one AX round trip per menu item.
-        guard depth < 3 else { return nil }
+        guard depth < 3 else { return }
         let children: [AXUIElement] = attribute(kAXChildrenAttribute, from: element) ?? []
         for child in children {
-            if let match = findMenuItem(in: child,
-                                        shortcut: shortcut,
-                                        depth: depth + 1,
-                                        visited: &visited,
-                                        disabledMatch: &disabledMatch) {
-                return match
-            }
+            findMenuItems(in: child, depth: depth + 1, search: &search)
         }
-        return nil
     }
 
     private func attribute<T>(_ name: String, from element: AXUIElement) -> T? {

@@ -491,16 +491,25 @@ enum PointerInputFeatureTests {
                "an unknown frontmost app keeps the navigation behavior")
         // Right after Forward, Finder and Safari still report Back as disabled
         // for up to about a second; a quick change of direction must press it.
-        suite.expect(MouseNavigationSupport.itemToPress(enabled: nil as String?, disabled: "Back")?.item == "Back",
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: [nil, nil] as [String?],
+                                                        disabled: ["Back", nil])?.item == "Back",
                "a Back that still reads disabled is pressed, so a quick change of direction goes through")
-        suite.expect(MouseNavigationSupport.itemToPress(enabled: nil as String?, disabled: "Back")?.readEnabled == false,
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: [nil] as [String?],
+                                                        disabled: ["Back"])?.readEnabled == false,
                "a press on an item that read disabled is marked, so its refusal posts no shortcut")
-        suite.expect(MouseNavigationSupport.itemToPress(enabled: "Back", disabled: "Indent")?.item == "Back",
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: ["Back"], disabled: ["Indent"])?.item == "Back",
                "an item that reads enabled wins over one that reads disabled")
-        suite.expect(MouseNavigationSupport.itemToPress(enabled: "Back", disabled: nil)?.readEnabled == true,
+        // The Go menu can keep a key from another keyboard that carries
+        // another command in the app in front, which shows the declared one.
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: [nil, "Back"], disabled: ["Forward", nil])
+                        .map { $0.item == "Back" && $0.shortcut == 1 } == true,
+               "an enabled item under the declared bracket wins over a disabled one under the Go menu's key")
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: ["Back", "Indent"], disabled: [nil, nil])?.shortcut == 0,
+               "between enabled items the most likely shortcut wins")
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: [nil, "Back"], disabled: [nil, nil])?.readEnabled == true,
                "an item that reads enabled keeps its shortcut fallback")
-        suite.expect(MouseNavigationSupport.itemToPress(enabled: nil as String?, disabled: nil) == nil,
-               "with no item carrying the shortcut there is nothing to press")
+        suite.expect(MouseNavigationSupport.itemToPress(enabled: [nil, nil] as [String?], disabled: [nil, nil]) == nil,
+               "with no item carrying a shortcut there is nothing to press")
 
         // MARK: Event timestamps at the HID tap (issue #1689)
 
